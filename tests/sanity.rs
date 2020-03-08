@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use tempdir::TempDir;
+use blake2;
 
 #[test]
 fn sanity() -> Result<(), DigestError> {
