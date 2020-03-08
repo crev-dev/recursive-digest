@@ -2,6 +2,7 @@
 use std::marker::PhantomData;
 use std::{
     collections::HashSet,
+    ffi::OsStr,
     fs,
     io::BufRead,
     path::{Path, PathBuf},
@@ -167,6 +168,17 @@ where
     }
 }
 
+#[cfg(unix)]
+fn hash_osstr<D: digest::Digest>(digest: &mut D, s: &OsStr) {
+    use std::os::unix::ffi::OsStrExt;
+    digest.input(s.as_bytes());
+}
+
+#[cfg(not(unix))]
+fn hash_osstr<D: digest::Digest>(digest: &mut D, s: &OsStr) {
+    digest.input(s.to_string_lossy().as_bytes());
+}
+
 impl<Digest, FFilter, FAData> RecursiveDigest<Digest, FFilter, FAData>
 where
     FFilter: Fn(&walkdir::DirEntry) -> bool,
@@ -230,25 +242,10 @@ where
 
                 let mut name_hasher = Digest::new();
                 // name
-                if cfg!(unix) {
-                    use std::os::unix::ffi::OsStrExt;
-                    name_hasher.input(
-                        entry
-                            .path()
-                            .file_name()
-                            .expect("must have a file_name")
-                            .as_bytes(),
-                    );
-                } else {
-                    name_hasher.input(
-                        entry
-                            .path()
-                            .file_name()
-                            .expect("must have a file_name")
-                            .to_string_lossy()
-                            .as_bytes(),
-                    );
-                }
+                hash_osstr(
+                    &mut name_hasher,
+                    entry.path().file_name().expect("must have a file_name"),
+                );
                 // additional data (optional)
                 (self.additional_data)(
                     &entry,
