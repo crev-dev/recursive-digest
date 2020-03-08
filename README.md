@@ -33,4 +33,9 @@ a simple file is not the same as just a normal digest of it (`H(file_content)`) 
     * `H(entry_name)`
     * `RecursiveDigest(H, entry_path)`
 
+If optional additional data extensions is used, the `H(entry_name)` above becomes
+`H(entry_name || 0 || additional data)`. The format and meaning of additional
+data is unspecified, but was intendet for fielsystem metadata like file system
+permissions and ownership.
+
 

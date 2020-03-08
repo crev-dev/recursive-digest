@@ -1,13 +1,17 @@
-use blake2;
-use failure_derive::Fail;
+//! Recursive digest for filesystem path content
+use std::marker::PhantomData;
 use std::{
-    collections::{BTreeMap, HashSet},
-    ffi::OsString,
+    collections::HashSet,
     fs,
     io::BufRead,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
+use thiserror::Error;
 
+/// Re-export `walkdir`
+pub use walkdir;
+
+/// Read file content into a `digest::Digest`
 fn read_file_to_digest_input(path: &Path, input: &mut impl digest::Digest) -> std::io::Result<()> {
     let file = fs::File::open(path)?;
 
@@ -28,29 +32,17 @@ fn read_file_to_digest_input(path: &Path, input: &mut impl digest::Digest) -> st
     Ok(())
 }
 
-/// Sorted list of all descendants of a directory
-type Descendants = BTreeMap<OsString, Entry>;
-
-#[derive(Default)]
-struct Entry(Descendants);
-
-struct RecursiveDigest<Digest = blake2::Blake2b> {
-    root_path: PathBuf,
-    root: Entry,
-    digest: std::marker::PhantomData<Digest>,
-}
-
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum DigestError {
-    #[fail(display = "could not convert OsStr string to utf8")]
+    #[error("could not convert OsStr string to utf8")]
     OsStrConversionError,
-    #[fail(display = "io Error: {}", _0)]
+    #[error("io Error: {}", _0)]
     IoError(std::io::Error),
-    #[fail(display = "walkdir Error: {}", _0)]
+    #[error("walkdir Error: {}", _0)]
     WalkdirError(walkdir::Error),
-    #[fail(display = "an entry that was supposed to be a file, contains sub-entries")]
+    #[error("an entry that was supposed to be a file, contains sub-entries")]
     FileWithSubentriesError,
-    #[fail(display = "file not supported: {}", _0)]
+    #[error("file not supported: {}", _0)]
     FileNotSupported(String),
 }
 
@@ -66,108 +58,230 @@ impl From<walkdir::Error> for DigestError {
     }
 }
 
-impl<Digest> RecursiveDigest<Digest>
+/// Handle passed to the user to add optional path data
+pub struct AdditionalDataWriter<'a, D> {
+    used: bool,
+    hasher: &'a mut D,
+}
+
+impl<'a, D> AdditionalDataWriter<'a, D>
+where
+    D: digest::Digest,
+{
+    pub fn input(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            if !self.used {
+                self.hasher.input(&[0]);
+                self.used = true;
+            }
+            self.hasher.input(bytes);
+        }
+    }
+}
+
+pub struct RecursiveDigestBuilder<Digest, FFilter, FAData> {
+    filter: FFilter,
+    additional_data: FAData,
+    digest: std::marker::PhantomData<Digest>,
+}
+
+impl<Digest, FFilter, FAData> RecursiveDigestBuilder<Digest, FFilter, FAData>
+where
+    FFilter: Fn(&walkdir::DirEntry) -> bool,
+    FAData: Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+{
+    /// Set filter function just like [`walkdir::IntoIterator::filter_entry`]
+    pub fn filter<F: Fn(&walkdir::DirEntry) -> bool>(
+        self,
+        filter: F,
+    ) -> RecursiveDigestBuilder<Digest, F, FAData> {
+        RecursiveDigestBuilder {
+            filter,
+            additional_data: self.additional_data,
+            digest: self.digest,
+        }
+    }
+
+    pub fn additional_data<
+        F: Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+    >(
+        self,
+        f: F,
+    ) -> RecursiveDigestBuilder<Digest, FFilter, F> {
+        RecursiveDigestBuilder {
+            filter: self.filter,
+            additional_data: f,
+            digest: self.digest,
+        }
+    }
+
+    pub fn build(self) -> RecursiveDigest<Digest, FFilter, FAData> {
+        RecursiveDigest {
+            digest: self.digest,
+            filter: self.filter,
+            additional_data: self.additional_data,
+        }
+    }
+}
+
+/// Recursive Digest
+///
+/// Can calculate a recursive digest for a path
+pub struct RecursiveDigest<Digest, FFilter, FAData> {
+    digest: PhantomData<Digest>,
+    filter: FFilter,
+    additional_data: FAData,
+}
+
+impl<Digest>
+    RecursiveDigest<
+        Digest,
+        Box<dyn Fn(&walkdir::DirEntry) -> bool>,
+        Box<dyn Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>>,
+    >
 where
     Digest: digest::Digest + digest::FixedOutput,
 {
-    fn new<I>(root_path: PathBuf, rel_paths: I) -> Self
-    where
-        I: IntoIterator<Item = PathBuf>,
-    {
-        let mut s = Self {
-            root_path,
-            root: Entry(Default::default()),
-            digest: std::marker::PhantomData,
-        };
+    /// Create `RecursiveDigest` by configuring `RecursiveDigestBuilder`
+    pub fn new() -> RecursiveDigestBuilder<
+        Digest,
+        Box<dyn Fn(&walkdir::DirEntry) -> bool>,
+        Box<dyn Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>>,
+    > {
+        RecursiveDigestBuilder {
+            filter: Box::new(|_| true),
+            additional_data: Box::new(|_| Ok(())),
+            digest: PhantomData,
+        }
+    }
+}
 
-        for path in rel_paths.into_iter() {
-            assert!(
-                !path.is_absolute(),
-                "RecursiveDigest: Expected only relative paths: {}",
-                path.display()
-            );
-            s.insert_path(&path);
+impl<Digest, FFilter, FAData> RecursiveDigest<Digest, FFilter, FAData>
+where
+    FFilter: Fn(&walkdir::DirEntry) -> bool,
+    FAData: Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+    Digest: digest::Digest + digest::FixedOutput,
+{
+    pub fn get_digest_of(&mut self, root_path: &Path) -> Result<Vec<u8>, DigestError> {
+        let mut hashers = vec![];
+
+        // pop the top hasher and output it to the one just above it
+        fn flush_up_one_level<D: digest::Digest + digest::FixedOutput>(hashers: &mut Vec<D>) {
+            let hasher = hashers.pop().expect("must not be empty yet");
+            hashers
+                .last_mut()
+                .expect("must not happen")
+                .input(hasher.fixed_result().as_slice());
         }
 
-        s
-    }
+        let base_depth = root_path.components().count();
 
-    fn get_digest(self) -> Result<Vec<u8>, DigestError> {
-        let mut hasher = Digest::new();
-
-        self.read_content_of(&self.root_path, &self.root, &mut hasher)?;
-
-        Ok(hasher.result().to_vec())
-    }
-
-    fn insert_path(&mut self, path: &Path) {
-        let mut cur_entry = &mut self.root;
-
-        for comp in path.components() {
-            match comp {
-                Component::Normal(osstr) => {
-                    cur_entry = cur_entry.0.entry(osstr.to_owned()).or_default();
+        let mut first = true;
+        for entry in walkdir::WalkDir::new(root_path)
+            .follow_links(false)
+            .sort_by(|a, b| a.path().cmp(b.path()))
+            .into_iter()
+            .filter_entry(|entry| {
+                // can't skip the `root_path`
+                if first {
+                    debug_assert_eq!(root_path, entry.path());
+                    first = false;
+                    return true;
                 }
-                _ => panic!("Didn't expect {:?}", comp),
+
+                (self.filter)(entry)
+            })
+        {
+            let entry = entry?;
+            let entry_depth = entry.path().components().count();
+
+            debug_assert!(base_depth <= entry_depth);
+            let depth = entry_depth - base_depth;
+            let hasher_size_required = depth + 1;
+
+            // we finished with (potentially multiple levels of) recursive content
+            // in the previous iterations, now:
+            // we flush it upwards, and replace the top one with a fresh one
+            while hasher_size_required <= hashers.len() {
+                flush_up_one_level(&mut hashers);
+            }
+            hashers.push(Digest::new());
+
+            debug_assert_eq!(hashers.len(), hasher_size_required);
+
+            let file_type = entry.file_type();
+
+            // top level directory includes only content, no name or additional_data
+            // names and additional data go the hasher above the one we just prepared
+            if 0 < depth {
+                let hasher = hashers.get_mut(depth - 1).expect("must not happen");
+
+                let mut name_hasher = Digest::new();
+                // name
+                if cfg!(target_os = "unix") {
+                    use std::os::unix::ffi::OsStrExt;
+                    name_hasher.input(
+                        entry
+                            .path()
+                            .file_name()
+                            .expect("must have a file_name")
+                            .as_bytes(),
+                    );
+                } else {
+                    name_hasher.input(
+                        entry
+                            .path()
+                            .file_name()
+                            .expect("must have a file_name")
+                            .to_string_lossy()
+                            .as_bytes(),
+                    );
+                }
+                // additional data (optional)
+                (self.additional_data)(&mut AdditionalDataWriter {
+                    hasher,
+                    used: false,
+                })?;
+                hasher.input(name_hasher.fixed_result().as_slice());
+            }
+
+            // content
+            if file_type.is_file() {
+                self.read_content_of_file(
+                    entry.path(),
+                    hashers.last_mut().expect("must not happen"),
+                )?;
+            } else if file_type.is_symlink() {
+                self.read_content_of_symlink(
+                    entry.path(),
+                    hashers.last_mut().expect("must not happen"),
+                )?;
+            } else if file_type.is_dir() {
+                hashers.last_mut().expect("must not happen").input(b"D");
+            } else {
+                return Err(DigestError::FileNotSupported(
+                    entry.path().display().to_string(),
+                ));
             }
         }
-    }
 
-    fn read_content_of(
-        &self,
-        full_path: &Path,
-        entry: &Entry,
-        hasher: &mut Digest,
-    ) -> Result<(), DigestError> {
-        let attr = fs::symlink_metadata(full_path)?;
-        if attr.is_file() {
-            self.read_content_of_file(full_path, entry, hasher)
-        } else if attr.is_dir() {
-            self.read_content_of_dir(full_path, entry, hasher)
-        } else if attr.file_type().is_symlink() {
-            self.read_content_of_symlink(full_path, entry, hasher)
-        } else {
-            Err(DigestError::FileNotSupported(
-                full_path.to_string_lossy().to_string(),
-            ))
+        loop {
+            if hashers.len() == 1 {
+                return Ok(hashers
+                    .pop()
+                    .expect("must not fail")
+                    .fixed_result()
+                    .to_vec());
+            }
+            flush_up_one_level(&mut hashers);
         }
-    }
-
-    fn read_content_of_dir(
-        &self,
-        full_path: &Path,
-        entry: &Entry,
-        parent_hasher: &mut Digest,
-    ) -> Result<(), DigestError> {
-        parent_hasher.input(b"D");
-        for (k, v) in &entry.0 {
-            let mut hasher = Digest::new();
-            hasher.input(
-                k.to_str()
-                    .ok_or(DigestError::OsStrConversionError)?
-                    .as_bytes(),
-            );
-            parent_hasher.input(hasher.fixed_result().as_slice());
-
-            let mut hasher = Digest::new();
-            let full_path = full_path.join(k);
-            self.read_content_of(&full_path, &v, &mut hasher)?;
-            parent_hasher.input(hasher.fixed_result().as_slice());
-        }
-
-        Ok(())
     }
 
     fn read_content_of_file(
         &self,
         full_path: &Path,
-        entry: &Entry,
         parent_hasher: &mut Digest,
     ) -> Result<(), DigestError> {
-        if !entry.0.is_empty() {
-            return Err(DigestError::FileWithSubentriesError);
-        }
-
         parent_hasher.input(b"F");
         read_file_to_digest_input(full_path, parent_hasher)?;
         Ok(())
@@ -176,10 +290,8 @@ where
     fn read_content_of_symlink(
         &self,
         full_path: &Path,
-        entry: &Entry,
         parent_hasher: &mut Digest,
     ) -> Result<(), DigestError> {
-        assert!(entry.0.is_empty());
         parent_hasher.input(b"L");
         parent_hasher.input(
             full_path
@@ -192,6 +304,7 @@ where
     }
 }
 
+#[deprecated]
 pub fn get_recursive_digest_for_paths<Digest: digest::Digest + digest::FixedOutput, H>(
     root_path: &Path,
     paths: HashSet<PathBuf, H>,
@@ -199,34 +312,20 @@ pub fn get_recursive_digest_for_paths<Digest: digest::Digest + digest::FixedOutp
 where
     H: std::hash::BuildHasher,
 {
-    RecursiveDigest::<Digest>::new(root_path.into(), paths).get_digest()
+    let mut h = RecursiveDigest::<Digest, _, _>::new()
+        .filter(|entry| {
+            let rel_path = entry
+                .path()
+                .strip_prefix(&root_path)
+                .expect("must be prefix");
+            paths.contains(rel_path)
+        })
+        .build();
+
+    h.get_digest_of(root_path)
 }
 
-/// A helper function that strips a root folder from a path. If the root folder
-/// is not part of the path it will simply return.
-fn strip_root_path_if_included<'a>(root_path: &Path, path: &'a Path) -> &'a Path {
-    path.strip_prefix(&root_path).unwrap_or(path)
-}
-
-#[test]
-fn test_strip_root_path_if_included() {
-    let root_path = Path::new("some/root/path");
-
-    // Should strip the root path here
-    let path_with_root = Path::new("some/root/path/and/subfolder");
-    assert_eq!(
-        strip_root_path_if_included(&root_path, path_with_root),
-        Path::new("and/subfolder")
-    );
-
-    // Should keep this path intact
-    let path_without_root = Path::new("other/path/and/subfolder");
-    assert_eq!(
-        strip_root_path_if_included(&root_path, path_without_root),
-        path_without_root
-    );
-}
-
+#[deprecated]
 pub fn get_recursive_digest_for_dir<
     Digest: digest::Digest + digest::FixedOutput,
     H: std::hash::BuildHasher,
@@ -234,21 +333,15 @@ pub fn get_recursive_digest_for_dir<
     root_path: &Path,
     rel_path_ignore_list: &HashSet<PathBuf, H>,
 ) -> Result<Vec<u8>, DigestError> {
-    let mut hasher = RecursiveDigest::<Digest>::new(root_path.into(), None);
-
-    for entry in walkdir::WalkDir::new(root_path)
-        .into_iter()
-        .filter_entry(|entry| {
-            let path = strip_root_path_if_included(&root_path, entry.path());
-            !rel_path_ignore_list.contains(path)
+    let mut h = RecursiveDigest::<Digest, _, _>::new()
+        .filter(|entry| {
+            let rel_path = entry
+                .path()
+                .strip_prefix(&root_path)
+                .expect("must be prefix");
+            !rel_path_ignore_list.contains(rel_path)
         })
-    {
-        let entry = entry?;
-        let path = strip_root_path_if_included(&root_path, entry.path());
-        if !rel_path_ignore_list.contains(path) {
-            hasher.insert_path(path);
-        }
-    }
+        .build();
 
-    hasher.get_digest()
+    h.get_digest_of(root_path)
 }
