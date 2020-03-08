@@ -88,7 +88,8 @@ pub struct RecursiveDigestBuilder<Digest, FFilter, FAData> {
 impl<Digest, FFilter, FAData> RecursiveDigestBuilder<Digest, FFilter, FAData>
 where
     FFilter: Fn(&walkdir::DirEntry) -> bool,
-    FAData: Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+    FAData:
+        Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
 {
     /// Set filter function just like [`walkdir::IntoIterator::filter_entry`]
     pub fn filter<F: Fn(&walkdir::DirEntry) -> bool>(
@@ -103,7 +104,7 @@ where
     }
 
     pub fn additional_data<
-        F: Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+        F: Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
     >(
         self,
         f: F,
@@ -137,7 +138,12 @@ impl<Digest>
     RecursiveDigest<
         Digest,
         Box<dyn Fn(&walkdir::DirEntry) -> bool>,
-        Box<dyn Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>>,
+        Box<
+            dyn Fn(
+                &walkdir::DirEntry,
+                &mut AdditionalDataWriter<'_, Digest>,
+            ) -> Result<(), DigestError>,
+        >,
     >
 where
     Digest: digest::Digest + digest::FixedOutput,
@@ -146,11 +152,16 @@ where
     pub fn new() -> RecursiveDigestBuilder<
         Digest,
         Box<dyn Fn(&walkdir::DirEntry) -> bool>,
-        Box<dyn Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>>,
+        Box<
+            dyn Fn(
+                &walkdir::DirEntry,
+                &mut AdditionalDataWriter<'_, Digest>,
+            ) -> Result<(), DigestError>,
+        >,
     > {
         RecursiveDigestBuilder {
             filter: Box::new(|_| true),
-            additional_data: Box::new(|_| Ok(())),
+            additional_data: Box::new(|_, _| Ok(())),
             digest: PhantomData,
         }
     }
@@ -159,10 +170,11 @@ where
 impl<Digest, FFilter, FAData> RecursiveDigest<Digest, FFilter, FAData>
 where
     FFilter: Fn(&walkdir::DirEntry) -> bool,
-    FAData: Fn(&mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+    FAData:
+        Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
     Digest: digest::Digest + digest::FixedOutput,
 {
-    pub fn get_digest_of(&mut self, root_path: &Path) -> Result<Vec<u8>, DigestError> {
+    pub fn get_digest_of(&self, root_path: &Path) -> Result<Vec<u8>, DigestError> {
         let mut hashers = vec![];
 
         // pop the top hasher and output it to the one just above it
@@ -218,7 +230,7 @@ where
 
                 let mut name_hasher = Digest::new();
                 // name
-                if cfg!(target_os = "unix") {
+                if cfg!(unix) {
                     use std::os::unix::ffi::OsStrExt;
                     name_hasher.input(
                         entry
@@ -238,10 +250,13 @@ where
                     );
                 }
                 // additional data (optional)
-                (self.additional_data)(&mut AdditionalDataWriter {
-                    hasher,
-                    used: false,
-                })?;
+                (self.additional_data)(
+                    &entry,
+                    &mut AdditionalDataWriter {
+                        hasher,
+                        used: false,
+                    },
+                )?;
                 hasher.input(name_hasher.fixed_result().as_slice());
             }
 
@@ -312,7 +327,7 @@ pub fn get_recursive_digest_for_paths<Digest: digest::Digest + digest::FixedOutp
 where
     H: std::hash::BuildHasher,
 {
-    let mut h = RecursiveDigest::<Digest, _, _>::new()
+    let h = RecursiveDigest::<Digest, _, _>::new()
         .filter(|entry| {
             let rel_path = entry
                 .path()
@@ -333,7 +348,7 @@ pub fn get_recursive_digest_for_dir<
     root_path: &Path,
     rel_path_ignore_list: &HashSet<PathBuf, H>,
 ) -> Result<Vec<u8>, DigestError> {
-    let mut h = RecursiveDigest::<Digest, _, _>::new()
+    let h = RecursiveDigest::<Digest, _, _>::new()
         .filter(|entry| {
             let rel_path = entry
                 .path()
