@@ -159,7 +159,8 @@ where
             .follow_links(false)
             .sort_by(|a, b| a.path().cmp(b.path()))
             .into_iter()
-            .filter_entry(&self.filter)
+            // can't skip the `root_path`
+            .filter_entry(|entry| root_path == entry.path() || (self.filter)(entry))
         {
             let entry = entry?;
             let entry_depth = entry.path().components().count();
@@ -168,23 +169,12 @@ where
             let depth = entry_depth - base_depth;
             let hasher_size_required = depth + 1;
 
-            // we're at the same level, which means we
-            // iterating over a second file in a directory,
-            // flush it out as a content
-            // we will go deeper again in next `if` expression
-            if hashers.len() == hasher_size_required {
-                flush_up_one_level(&mut hashers);
-            }
-
-            // we go deeper: only one level at the time though
-            if hashers.len() < hasher_size_required {
-                hashers.push(Digest::new());
-            }
-
             // we finished with (potentially multiple levels of) recursive content
-            while hasher_size_required < hashers.len() {
+            // we flush it upwards, and replace the top one with a fresh one
+            while hasher_size_required <= hashers.len() {
                 flush_up_one_level(&mut hashers);
             }
+            hashers.push(Digest::new());
 
             debug_assert_eq!(hashers.len(), hasher_size_required);
 
@@ -287,15 +277,14 @@ pub fn get_recursive_digest_for_paths<Digest: digest::Digest + digest::FixedOutp
 where
     H: std::hash::BuildHasher,
 {
-    let empty_path = Path::new("");
     let mut h = RecursiveDigest::<Digest, _, _>::new()
         .filter(|entry| {
             let rel_path = strip_root_path_if_included(&root_path, entry.path());
-            rel_path == empty_path || paths.contains(rel_path)
+            paths.contains(rel_path)
         })
         .build();
 
-    h.get_digest(root_path.into())
+    h.get_digest(root_path)
 }
 
 pub fn get_recursive_digest_for_dir<
@@ -305,17 +294,14 @@ pub fn get_recursive_digest_for_dir<
     root_path: &Path,
     rel_path_ignore_list: &HashSet<PathBuf, H>,
 ) -> Result<Vec<u8>, DigestError> {
-    dbg!(root_path);
-    dbg!(rel_path_ignore_list);
     let mut h = RecursiveDigest::<Digest, _, _>::new()
         .filter(|entry| {
             let rel_path = strip_root_path_if_included(&root_path, entry.path());
-            dbg!(rel_path);
             !rel_path_ignore_list.contains(rel_path)
         })
         .build();
 
-    h.get_digest(root_path.into())
+    h.get_digest(root_path)
 }
 
 fn strip_root_path_if_included<'a>(root_path: &Path, path: &'a Path) -> &'a Path {
