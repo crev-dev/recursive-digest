@@ -13,7 +13,7 @@ Given any digest algorithm `H` (a Hash function algorithm),
 a `RecursiveDigest(H, path)` is:
 
 * for a file: `H("F" || file_content)`
-* for a symlink: `H("S" || symlink_content)`
+* for a symlink: `H("L" || symlink_content)`
 * for a directory: `H("D" || directory_content)`
 
 As you can see a one-letter ASCII prefix is used to make it impossible
