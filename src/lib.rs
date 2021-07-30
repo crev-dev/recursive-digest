@@ -21,7 +21,7 @@ fn read_file_to_digest_input(path: &Path, input: &mut impl digest::Digest) -> st
     loop {
         let length = {
             let buffer = reader.fill_buf()?;
-            input.input(buffer);
+            input.update(buffer);
             buffer.len()
         };
         if length == 0 {
@@ -72,10 +72,10 @@ where
     pub fn input(&mut self, bytes: &[u8]) {
         if !bytes.is_empty() {
             if !self.used {
-                self.hasher.input(&[0]);
+                self.hasher.update(&[0]);
                 self.used = true;
             }
-            self.hasher.input(bytes);
+            self.hasher.update(bytes);
         }
     }
 }
@@ -171,12 +171,12 @@ where
 #[cfg(unix)]
 fn hash_osstr<D: digest::Digest>(digest: &mut D, s: &OsStr) {
     use std::os::unix::ffi::OsStrExt;
-    digest.input(s.as_bytes());
+    digest.update(s.as_bytes());
 }
 
 #[cfg(not(unix))]
 fn hash_osstr<D: digest::Digest>(digest: &mut D, s: &OsStr) {
-    digest.input(s.to_string_lossy().as_bytes());
+    digest.update(s.to_string_lossy().as_bytes());
 }
 
 impl<Digest, FFilter, FAData> RecursiveDigest<Digest, FFilter, FAData>
@@ -195,7 +195,7 @@ where
             hashers
                 .last_mut()
                 .expect("must not happen")
-                .input(hasher.fixed_result().as_slice());
+                .update(hasher.finalize_fixed().as_slice());
         }
 
         let base_depth = root_path.components().count();
@@ -254,7 +254,7 @@ where
                         used: false,
                     },
                 )?;
-                hasher.input(name_hasher.fixed_result().as_slice());
+                hasher.update(name_hasher.finalize_fixed().as_slice());
             }
 
             // content
@@ -269,7 +269,7 @@ where
                     hashers.last_mut().expect("must not happen"),
                 )?;
             } else if file_type.is_dir() {
-                hashers.last_mut().expect("must not happen").input(b"D");
+                hashers.last_mut().expect("must not happen").update(b"D");
             } else {
                 return Err(DigestError::FileNotSupported(
                     entry.path().display().to_string(),
@@ -282,7 +282,7 @@ where
                 return Ok(hashers
                     .pop()
                     .expect("must not fail")
-                    .fixed_result()
+                    .finalize_fixed()
                     .to_vec());
             }
             flush_up_one_level(&mut hashers);
@@ -294,7 +294,7 @@ where
         full_path: &Path,
         parent_hasher: &mut Digest,
     ) -> Result<(), DigestError> {
-        parent_hasher.input(b"F");
+        parent_hasher.update(b"F");
         read_file_to_digest_input(full_path, parent_hasher)?;
         Ok(())
     }
@@ -304,8 +304,8 @@ where
         full_path: &Path,
         parent_hasher: &mut Digest,
     ) -> Result<(), DigestError> {
-        parent_hasher.input(b"L");
-        parent_hasher.input(
+        parent_hasher.update(b"L");
+        parent_hasher.update(
             full_path
                 .read_link()?
                 .to_str()
