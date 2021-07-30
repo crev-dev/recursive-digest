@@ -40,10 +40,10 @@ fn sanity() -> Result<(), DigestError> {
     )?;
 
     let mut hasher = blake2::Blake2b::new();
-    hasher.input(b"F");
-    hasher.input(msg);
+    hasher.update(b"F");
+    hasher.update(msg);
 
-    let standalone_file_digest = hasher.result().to_vec();
+    let standalone_file_digest = hasher.finalize().to_vec();
 
     assert_eq!(&file_digest, &standalone_file_digest);
     // captured by `echo  -ne "Ffoo" | b2sum`
@@ -58,16 +58,16 @@ fn sanity() -> Result<(), DigestError> {
     )?;
     assert_ne!(&dir_digest, &standalone_file_digest);
     let mut hasher = blake2::Blake2b::new();
-    hasher.input(b"D");
-    hasher.input(
+    hasher.update(b"D");
+    hasher.update(
         &hex::decode(
             "ca002330e69d3e6b84a46a56a6533fd79d51d97a3bb7cad6c2ff43b354185d6dc1e723fb3db4ae0737e120378424c714bb982d9dc5bbd7a0ab318240ddd18f8d"
         ).unwrap()
     );
 
-    hasher.input(&file_digest);
+    hasher.update(&file_digest);
 
-    let manual_dir_digest = hasher.result().to_vec();
+    let manual_dir_digest = hasher.finalize().to_vec();
     assert_eq!(&dir_digest, &manual_dir_digest);
 
     Ok(())
@@ -135,9 +135,9 @@ fn test_file_digest() -> Result<(), DigestError> {
 
     let expected = {
         let mut hasher = blake2::Blake2b::new();
-        hasher.input(b"F");
-        hasher.input(foo_content);
-        hasher.result().to_vec()
+        hasher.update(b"F");
+        hasher.update(foo_content);
+        hasher.finalize().to_vec()
     };
 
     assert_eq!(
@@ -168,19 +168,19 @@ fn test_exclude_include_path() -> Result<(), DigestError> {
 
     let expected = {
         let mut hasher = blake2::Blake2b::new();
-        hasher.input(b"F");
-        hasher.input(bar_content);
-        let file_sum = hasher.result().to_vec();
+        hasher.update(b"F");
+        hasher.update(bar_content);
+        let file_sum = hasher.finalize().to_vec();
 
         let mut hasher = blake2::Blake2b::new();
-        hasher.input(b"bar");
-        let dir_sum = hasher.result().to_vec();
+        hasher.update(b"bar");
+        let dir_sum = hasher.finalize().to_vec();
 
         let mut hasher = blake2::Blake2b::new();
-        hasher.input(b"D");
-        hasher.input(dir_sum);
-        hasher.input(file_sum);
-        hasher.result().to_vec()
+        hasher.update(b"D");
+        hasher.update(dir_sum);
+        hasher.update(file_sum);
+        hasher.finalize().to_vec()
     };
 
     let mut excluded = HashSet::new();
