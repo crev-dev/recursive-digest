@@ -185,10 +185,10 @@ where
         // pop the top hasher and output it to the one just above it
         fn flush_up_one_level<D: digest::Digest + digest::FixedOutput>(hashers: &mut Vec<D>) {
             let hasher = hashers.pop().expect("must not be empty yet");
-            hashers
+            let h2 = hashers
                 .last_mut()
-                .expect("must not happen")
-                .update(hasher.finalize_fixed().as_slice());
+                .expect("must not happen");
+            <D as digest::Digest>::update(h2, hasher.finalize_fixed().as_slice());
         }
 
         let base_depth = root_path.components().count();
@@ -247,7 +247,7 @@ where
                         used: false,
                     },
                 )?;
-                hasher.update(name_hasher.finalize_fixed().as_slice());
+                <D as digest::Digest>::update(hasher, name_hasher.finalize_fixed().as_slice());
             }
 
             // content
@@ -262,7 +262,8 @@ where
                     hashers.last_mut().expect("must not happen"),
                 )?;
             } else if file_type.is_dir() {
-                hashers.last_mut().expect("must not happen").update(b"D");
+                let hasher = hashers.last_mut().expect("must not happen");
+                <D as digest::Digest>::update(hasher, b"D");
             } else {
                 return Err(DigestError::FileNotSupported(
                     entry.path().display().to_string(),
@@ -287,7 +288,7 @@ where
         full_path: &Path,
         parent_hasher: &mut D,
     ) -> Result<(), DigestError> {
-        parent_hasher.update(b"F");
+        <D as digest::Digest>::update(parent_hasher, b"F");
         read_file_to_digest_input(full_path, parent_hasher)?;
         Ok(())
     }
@@ -297,8 +298,8 @@ where
         full_path: &Path,
         parent_hasher: &mut D,
     ) -> Result<(), DigestError> {
-        parent_hasher.update(b"L");
-        parent_hasher.update(
+        <D as digest::Digest>::update(parent_hasher, b"L");
+        <D as digest::Digest>::update(parent_hasher,
             full_path
                 .read_link()?
                 .to_str()
