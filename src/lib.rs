@@ -86,17 +86,16 @@ pub struct RecursiveDigestBuilder<Digest, FFilter, FAData> {
     digest: std::marker::PhantomData<Digest>,
 }
 
-impl<Digest, FFilter, FAData> RecursiveDigestBuilder<Digest, FFilter, FAData>
+impl<D, FFilter, FAData> RecursiveDigestBuilder<D, FFilter, FAData>
 where
     FFilter: Fn(&walkdir::DirEntry) -> bool,
-    FAData:
-        Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+    FAData: Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, D>) -> Result<(), DigestError>,
 {
     /// Set filter function just like [`walkdir::IntoIterator::filter_entry`]
     pub fn filter<F: Fn(&walkdir::DirEntry) -> bool>(
         self,
         filter: F,
-    ) -> RecursiveDigestBuilder<Digest, F, FAData> {
+    ) -> RecursiveDigestBuilder<D, F, FAData> {
         RecursiveDigestBuilder {
             filter,
             additional_data: self.additional_data,
@@ -105,11 +104,11 @@ where
     }
 
     pub fn additional_data<
-        F: Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
+        F: Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, D>) -> Result<(), DigestError>,
     >(
         self,
         f: F,
-    ) -> RecursiveDigestBuilder<Digest, FFilter, F> {
+    ) -> RecursiveDigestBuilder<D, FFilter, F> {
         RecursiveDigestBuilder {
             filter: self.filter,
             additional_data: f,
@@ -117,7 +116,7 @@ where
         }
     }
 
-    pub fn build(self) -> RecursiveDigest<Digest, FFilter, FAData> {
+    pub fn build(self) -> RecursiveDigest<D, FFilter, FAData> {
         RecursiveDigest {
             digest: self.digest,
             filter: self.filter,
@@ -135,29 +134,23 @@ pub struct RecursiveDigest<Digest, FFilter, FAData> {
     additional_data: FAData,
 }
 
-impl<Digest>
+impl<D>
     RecursiveDigest<
-        Digest,
+        D,
         Box<dyn Fn(&walkdir::DirEntry) -> bool>,
         Box<
-            dyn Fn(
-                &walkdir::DirEntry,
-                &mut AdditionalDataWriter<'_, Digest>,
-            ) -> Result<(), DigestError>,
+            dyn Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, D>) -> Result<(), DigestError>,
         >,
     >
 where
-    Digest: digest::Digest + digest::FixedOutput,
+    D: digest::Digest + digest::FixedOutput,
 {
     /// Create `RecursiveDigest` by configuring `RecursiveDigestBuilder`
     pub fn new() -> RecursiveDigestBuilder<
-        Digest,
+        D,
         Box<dyn Fn(&walkdir::DirEntry) -> bool>,
         Box<
-            dyn Fn(
-                &walkdir::DirEntry,
-                &mut AdditionalDataWriter<'_, Digest>,
-            ) -> Result<(), DigestError>,
+            dyn Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, D>) -> Result<(), DigestError>,
         >,
     > {
         RecursiveDigestBuilder {
@@ -179,12 +172,11 @@ fn hash_osstr<D: digest::Digest>(digest: &mut D, s: &OsStr) {
     digest.update(s.to_string_lossy().as_bytes());
 }
 
-impl<Digest, FFilter, FAData> RecursiveDigest<Digest, FFilter, FAData>
+impl<D, FFilter, FAData> RecursiveDigest<D, FFilter, FAData>
 where
     FFilter: Fn(&walkdir::DirEntry) -> bool,
-    FAData:
-        Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, Digest>) -> Result<(), DigestError>,
-    Digest: digest::Digest + digest::FixedOutput,
+    FAData: Fn(&walkdir::DirEntry, &mut AdditionalDataWriter<'_, D>) -> Result<(), DigestError>,
+    D: digest::Digest + digest::FixedOutput,
 {
     pub fn get_digest_of(&self, root_path: &Path) -> Result<Vec<u8>, DigestError> {
         let mut hashers = vec![];
@@ -229,7 +221,7 @@ where
             while hasher_size_required <= hashers.len() {
                 flush_up_one_level(&mut hashers);
             }
-            hashers.push(Digest::new());
+            hashers.push(D::new());
 
             debug_assert_eq!(hashers.len(), hasher_size_required);
 
@@ -240,7 +232,7 @@ where
             if 0 < depth {
                 let hasher = hashers.get_mut(depth - 1).expect("must not happen");
 
-                let mut name_hasher = Digest::new();
+                let mut name_hasher = D::new();
                 // name
                 hash_osstr(
                     &mut name_hasher,
@@ -292,7 +284,7 @@ where
     fn read_content_of_file(
         &self,
         full_path: &Path,
-        parent_hasher: &mut Digest,
+        parent_hasher: &mut D,
     ) -> Result<(), DigestError> {
         parent_hasher.update(b"F");
         read_file_to_digest_input(full_path, parent_hasher)?;
@@ -302,7 +294,7 @@ where
     fn read_content_of_symlink(
         &self,
         full_path: &Path,
-        parent_hasher: &mut Digest,
+        parent_hasher: &mut D,
     ) -> Result<(), DigestError> {
         parent_hasher.update(b"L");
         parent_hasher.update(
@@ -317,14 +309,14 @@ where
 }
 
 #[deprecated]
-pub fn get_recursive_digest_for_paths<Digest: digest::Digest + digest::FixedOutput, H>(
+pub fn get_recursive_digest_for_paths<D: digest::Digest + digest::FixedOutput, H>(
     root_path: &Path,
     paths: HashSet<PathBuf, H>,
 ) -> Result<Vec<u8>, DigestError>
 where
     H: std::hash::BuildHasher,
 {
-    let h = RecursiveDigest::<Digest, _, _>::new()
+    let h = RecursiveDigest::<D, _, _>::new()
         .filter(|entry| {
             let rel_path = entry
                 .path()

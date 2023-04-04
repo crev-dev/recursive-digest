@@ -20,3 +20,5 @@ walkdir = "2.3.2"
 hex = "0.4.3"
 tempdir = "0.3.7"
 blake2 = "0.9.1"
+
+[workspace]
