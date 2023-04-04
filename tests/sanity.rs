@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-use blake2;
+
 use crev_recursive_digest::DigestError;
 use digest::Digest;
 use std::{
@@ -22,7 +22,7 @@ fn sanity() -> Result<(), DigestError> {
 
     // File "recursive-digest-test/a/foo"
     let file_in_dir_path = dir_path.join("foo");
-    let mut file_in_dir = fs::File::create(&file_in_dir_path)?;
+    let mut file_in_dir = fs::File::create(file_in_dir_path)?;
     file_in_dir.write_all(msg)?;
     drop(file_in_dir);
 
@@ -116,7 +116,7 @@ fn backward_comp() -> Result<(), DigestError> {
     )?;
 
     assert_eq!(
-        hex::encode(&dir_digest),
+        hex::encode(dir_digest),
         "bc97399633e1228a563d57adecf98810364526a8e7bfc24b89985c5607e77605575d10989d5954b762af45c498129854dca603688fd63bd580bbf952c650b735"
     );
     tmp_dir.into_path();
@@ -158,12 +158,12 @@ fn test_exclude_include_path() -> Result<(), DigestError> {
 
     let foo_content = b"foo_content";
     let file_in_dir_path = tmp_dir.path().join("foo");
-    let mut file_in_dir = fs::File::create(&file_in_dir_path)?;
+    let mut file_in_dir = fs::File::create(file_in_dir_path)?;
     file_in_dir.write_all(foo_content)?;
 
     let bar_content = b"bar_content";
     let file_in_dir_path_2 = tmp_dir.path().join("bar");
-    let mut file_in_dir_2 = fs::File::create(&file_in_dir_path_2)?;
+    let mut file_in_dir_2 = fs::File::create(file_in_dir_path_2)?;
     file_in_dir_2.write_all(bar_content)?;
 
     let expected = {
@@ -187,7 +187,7 @@ fn test_exclude_include_path() -> Result<(), DigestError> {
     excluded.insert(Path::new("foo").to_path_buf());
     assert_eq!(
         crev_recursive_digest::get_recursive_digest_for_dir::<blake2::Blake2b, _>(
-            &tmp_dir.path(),
+            tmp_dir.path(),
             &excluded
         )?,
         expected
@@ -197,7 +197,7 @@ fn test_exclude_include_path() -> Result<(), DigestError> {
     included.insert(Path::new("bar").to_path_buf());
     assert_eq!(
         crev_recursive_digest::get_recursive_digest_for_paths::<blake2::Blake2b, _>(
-            &tmp_dir.path(),
+            tmp_dir.path(),
             included
         )?,
         expected
@@ -213,8 +213,8 @@ fn ignore_dir() -> Result<(), DigestError> {
     let d1 = tmp_dir.path().join("d1");
     let d2 = tmp_dir.path().join("d2");
 
-    fs::create_dir_all(&d1.join("a/b1/c/d"))?;
-    fs::create_dir_all(&d1.join("a/b2/c/d"))?;
+    fs::create_dir_all(d1.join("a/b1/c/d"))?;
+    fs::create_dir_all(d1.join("a/b2/c/d"))?;
     fs::create_dir_all(&d2)?;
 
     let excluded_empty = HashSet::new();

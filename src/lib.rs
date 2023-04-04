@@ -72,7 +72,7 @@ where
     pub fn input(&mut self, bytes: &[u8]) {
         if !bytes.is_empty() {
             if !self.used {
-                self.hasher.update(&[0]);
+                self.hasher.update([0]);
                 self.used = true;
             }
             self.hasher.update(bytes);
@@ -146,6 +146,7 @@ where
     D: digest::Digest + digest::FixedOutput,
 {
     /// Create `RecursiveDigest` by configuring `RecursiveDigestBuilder`
+    #[must_use]
     pub fn new() -> RecursiveDigestBuilder<
         D,
         Box<dyn Fn(&walkdir::DirEntry) -> bool>,
@@ -320,7 +321,7 @@ where
         .filter(|entry| {
             let rel_path = entry
                 .path()
-                .strip_prefix(&root_path)
+                .strip_prefix(root_path)
                 .expect("must be prefix");
             paths.contains(rel_path)
         })
@@ -341,7 +342,7 @@ pub fn get_recursive_digest_for_dir<
         .filter(|entry| {
             let rel_path = entry
                 .path()
-                .strip_prefix(&root_path)
+                .strip_prefix(root_path)
                 .expect("must be prefix");
             !rel_path_ignore_list.contains(rel_path)
         })
