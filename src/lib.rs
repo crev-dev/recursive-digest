@@ -211,14 +211,13 @@ where
     D: digest::Digest + digest::FixedOutput,
 {
     pub fn get_digest_of(&self, root_path: &Path) -> Result<Vec<u8>, DigestError> {
+        // Stack of one hasher per open directory from root to the current entry.
         let mut hashers = vec![];
 
-        // pop the top hasher and output it to the one just above it
+        // pop the top hasher and fold it into the one above
         fn flush_up_one_level<D: digest::Digest + digest::FixedOutput>(hashers: &mut Vec<D>) {
-            let hasher = hashers.pop().expect("must not be empty yet");
-            let h2 = hashers
-                .last_mut()
-                .expect("must not happen");
+            let hasher = hashers.pop().expect("len >= 2 at call site");
+            let h2 = hashers.last_mut().expect("len >= 2 at call site");
             <D as digest::Digest>::update(h2, hasher.finalize_fixed().as_slice());
         }
 
@@ -263,10 +262,10 @@ where
             // names and additional data go the hasher above the one we just prepared
             if 0 < depth {
                 let mut name_hasher = D::new();
-                // name
+                // name — non-root entries always have a file_name
                 hash_osstr(
                     &mut name_hasher,
-                    entry.path().file_name().expect("must have a file_name"),
+                    entry.path().file_name().expect("non-root entry"),
                 )?;
                 // additional data (optional) — folded into the entry-name hash
                 // per the README algorithm: H(entry_name || 0 || additional_data)
@@ -277,26 +276,26 @@ where
                         used: false,
                     },
                 )?;
-                let parent_hasher = hashers.get_mut(depth - 1).expect("must not happen");
+                let parent_hasher = hashers.get_mut(depth - 1).expect("parent exists for depth > 0");
                 <D as digest::Digest>::update(
                     parent_hasher,
                     name_hasher.finalize_fixed().as_slice(),
                 );
             }
 
-            // content
+            // content — hasher for this entry was just pushed above
             if file_type.is_file() {
                 self.read_content_of_file(
                     entry.path(),
-                    hashers.last_mut().expect("must not happen"),
+                    hashers.last_mut().expect("just pushed"),
                 )?;
             } else if file_type.is_symlink() {
                 self.read_content_of_symlink(
                     entry.path(),
-                    hashers.last_mut().expect("must not happen"),
+                    hashers.last_mut().expect("just pushed"),
                 )?;
             } else if file_type.is_dir() {
-                let hasher = hashers.last_mut().expect("must not happen");
+                let hasher = hashers.last_mut().expect("just pushed");
                 <D as digest::Digest>::update(hasher, b"D");
             } else {
                 return Err(DigestError::FileNotSupported(
@@ -305,11 +304,12 @@ where
             }
         }
 
+        // Drain nested hashers upward until only the root remains.
         loop {
             if hashers.len() == 1 {
                 return Ok(hashers
                     .pop()
-                    .expect("must not fail")
+                    .expect("len == 1")
                     .finalize_fixed()
                     .to_vec());
             }
